@@ -102,14 +102,23 @@ if user_query:
             for fig in figures:
                 if fig is None:
                     continue
+                # Plotly
                 try:
                     import plotly.graph_objects as go
                     if isinstance(fig, go.Figure):
                         st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        # Render HTML (e.g., Folium map)
-                        st.components.v1.html(fig, height=480, scrolling=False)
+                        continue
                 except Exception:
+                    pass
+                # HTML string or folium-like object
+                if isinstance(fig, str):
                     st.components.v1.html(fig, height=480, scrolling=False)
+                elif hasattr(fig, "_repr_html_"):
+                    try:
+                        st.components.v1.html(fig._repr_html_(), height=480, scrolling=False)
+                    except Exception:
+                        st.write(fig)
+                else:
+                    st.write(fig)
 
     st.session_state.messages.append({"role": "assistant", "content": response})
