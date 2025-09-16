@@ -135,6 +135,16 @@ def _add_trip_features(trips: pd.DataFrame) -> pd.DataFrame:
         )
         trips.loc[~mask, ["dropoff_latitude", "dropoff_longitude"]] = np.nan
 
+    # Rounded lat/lon for cheap clustering
+    if {"pickup_latitude", "pickup_longitude"}.issubset(trips.columns):
+        trips["pickup_loc"] = (
+            trips["pickup_latitude"].round(3).astype(str) + ", " + trips["pickup_longitude"].round(3).astype(str)
+        )
+    if {"dropoff_latitude", "dropoff_longitude"}.issubset(trips.columns):
+        trips["dropoff_loc"] = (
+            trips["dropoff_latitude"].round(3).astype(str) + ", " + trips["dropoff_longitude"].round(3).astype(str)
+        )
+
     return trips
 
 
@@ -211,8 +221,81 @@ def _load_csvs() -> Dict[str, pd.DataFrame]:
     }
 
 
+def _aggregate_demographics_by_trip(riders: pd.DataFrame, demo: pd.DataFrame) -> pd.DataFrame:
+    """Return per-trip aggregates: counts by age_group and rider count."""
+    if riders.empty:
+        return pd.DataFrame(columns=["trip_id", "num_riders_from_riders"])
+
+    r = riders.copy()
+    r = _coalesce_columns(r, {"trip_id": [r"^trip[_\s-]*id$"], "user_id": [r"^user[_\s-]*id$"]})
+
+    if not demo.empty:
+        d = demo[["user_id", "age", "age_group"]].copy()
+        joined = r.merge(d, on="user_id", how="left")
+    else:
+        joined = r
+        joined["age_group"] = np.nan
+
+    # Count riders per trip
+    counts = joined.groupby("trip_id").size().rename("num_riders_from_riders")
+
+    # Age group pivot
+    age_counts = (
+        joined.assign(age_group=joined["age_group"].astype("category"))
+        .pivot_table(index="trip_id", columns="age_group", values="user_id", aggfunc="count", fill_value=0)
+        .rename_axis(None, axis=1)
+    )
+    # Ensure stable columns
+    expected_cols = ["under 18", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+    for c in expected_cols:
+        if c not in age_counts.columns:
+            age_counts[c] = 0
+    age_counts = age_counts[expected_cols]
+    age_counts.columns = [
+        "age_under_18",
+        "age_18_24",
+        "age_25_34",
+        "age_35_44",
+        "age_45_54",
+        "age_55_64",
+        "age_65_plus",
+    ]
+
+    out = pd.concat([counts, age_counts], axis=1).reset_index()
+    return out
+
+
+def _enrich_trips_with_riders(trips: pd.DataFrame, riders: pd.DataFrame, demo: pd.DataFrame) -> pd.DataFrame:
+    if trips.empty:
+        return trips
+    df = trips.copy()
+    agg = _aggregate_demographics_by_trip(riders, demo)
+    if not agg.empty:
+        df = df.merge(agg, on="trip_id", how="left")
+        # Fill num_riders if missing
+        if "num_riders" in df.columns:
+            df["num_riders"] = df["num_riders"].fillna(df["num_riders_from_riders"])  # type: ignore[index]
+        else:
+            df["num_riders"] = df["num_riders_from_riders"]
+    else:
+        # Ensure columns exist for downstream code
+        for c in [
+            "num_riders_from_riders",
+            "age_under_18",
+            "age_18_24",
+            "age_25_34",
+            "age_35_44",
+            "age_45_54",
+            "age_55_64",
+            "age_65_plus",
+        ]:
+            if c not in df.columns:
+                df[c] = np.nan
+    return df
+
+
 def load_datasets() -> Dict[str, pd.DataFrame]:
-    """Load trips, riders, and demographics (Excel or CSV)."""
+    """Load trips, riders, and demographics (Excel or CSV), and enrich trips."""
     excel_path = BASE_DIR / DATA_EXCEL_NAME
     if excel_path.exists():
         raw = _load_excel(excel_path)
@@ -232,6 +315,9 @@ def load_datasets() -> Dict[str, pd.DataFrame]:
         )
 
     demo = _add_demographics_features(raw.get("demo_raw", pd.DataFrame()))
+
+    # Enrich trips with riders + demographics aggregates
+    trips = _enrich_trips_with_riders(trips, riders, demo)
 
     meta: Dict[str, object] = {}
     if not trips.empty and pd.api.types.is_datetime64_any_dtype(trips.get("event_time")):
