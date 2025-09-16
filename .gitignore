@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+.env
+.env.*
+*.log
+
+# Streamlit
+.streamlit/
+
+# Data (keep repo lean; upload via UI or host separately)
+/data/
+*.parquet
+*.feather
+*.zip
+*.gz
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Streamlit cloud caches
+**/.streamlit/cache/
+**/.cache/
