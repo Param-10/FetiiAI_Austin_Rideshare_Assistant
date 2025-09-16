@@ -71,8 +71,14 @@ def _filter_by_entities(trips: pd.DataFrame, entities: Dict[str, Any]) -> pd.Dat
         return df
 
     # Time filters
-    if "days" in entities and "day_of_week" in df.columns:
-        df = df[df["day_of_week"].isin(entities["days"])].copy()
+    if "days" in entities:
+        days = entities["days"]
+        if "day_of_week" in df.columns and df["day_of_week"].notna().any():
+            df = df[df["day_of_week"].isin(days)].copy()
+        elif "is_weekend" in df.columns:
+            weekend_days = {"Friday", "Saturday", "Sunday"}
+            if set(d.capitalize() for d in days) & weekend_days:
+                df = df[df["is_weekend"] == True].copy()
 
     if "hour_range" in entities and "hour" in df.columns:
         start, end = entities["hour_range"]
@@ -82,18 +88,21 @@ def _filter_by_entities(trips: pd.DataFrame, entities: Dict[str, Any]) -> pd.Dat
             # Handle wrap-around (20→03)
             df = df[(df["hour"] >= start) | (df["hour"] <= end)]
 
-    # Relative time filters
-    if "relative_time" in entities and "event_time" in df.columns and pd.api.types.is_datetime64_any_dtype(df["event_time"]):
-        max_time = df["event_time"].max()
-        if entities["relative_time"] == "last_month":
-            last_month = (max_time - pd.offsets.MonthBegin(1)).to_period("M")
-            df = df[df["event_time"].dt.to_period("M") == last_month]
-        elif entities["relative_time"] == "this_month":
-            this_month = max_time.to_period("M")
-            df = df[df["event_time"].dt.to_period("M") == this_month]
-        elif entities["relative_time"] == "last_week":
-            week_start = (max_time.normalize() - pd.Timedelta(days=7))
-            df = df[(df["event_time"] >= week_start) & (df["event_time"] <= max_time)]
+    # Relative time filters (skip if no valid timestamps)
+    if "relative_time" in entities and "event_time" in df.columns:
+        t = df["event_time"].dropna()
+        if pd.api.types.is_datetime64_any_dtype(df["event_time"]) and not t.empty:
+            max_time = t.max()
+            if entities["relative_time"] == "last_month":
+                target_period = (max_time - pd.offsets.MonthBegin(1)).to_period("M")
+                df = df[df["event_time"].dt.to_period("M") == target_period]
+            elif entities["relative_time"] == "this_month":
+                target_period = max_time.to_period("M")
+                df = df[df["event_time"].dt.to_period("M") == target_period]
+            elif entities["relative_time"] == "last_week":
+                week_start = (max_time.normalize() - pd.Timedelta(days=7))
+                df = df[(df["event_time"] >= week_start) & (df["event_time"] <= max_time)]
+        # else: no-op if event_time all NaT
 
     # Group size
     size_col = None
@@ -224,9 +233,14 @@ def answer_query(
 
     elif intent == "temporal":
         tdf = filtered
-        summary = _summarize_count(tdf, label="Filtered trips")
-        context["summary"] = "Here's how demand changes over time."
-        context.setdefault("highlights", []).append(summary)
+        if tdf.empty:
+            # fallback: show overall if filters eliminate all data
+            tdf = trips.copy()
+            context["summary"] = "No trips matched the time filters. Showing overall pattern."
+        else:
+            summary = _summarize_count(tdf, label="Filtered trips")
+            context["summary"] = "Here's how demand changes over time."
+            context.setdefault("highlights", []).append(summary)
 
         # Add peak day/hour if available
         if not tdf.empty:

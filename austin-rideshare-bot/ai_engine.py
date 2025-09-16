@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Any, Dict, Optional
+import json
+from typing import Any, Dict, Optional, Tuple
 
 try:
     import google.generativeai as genai  # type: ignore
@@ -34,36 +35,53 @@ def configure_gemini(api_key: Optional[str]) -> None:
 
 def classify_intent(query: str) -> str:
     q = (query or "").lower()
-    if any(k in q for k in ["where", "pickup", "dropoff", "downtown", "moody", "domain", "airport", "map", "location"]):
+    if any(k in q for k in ["where", "pickup", "dropoff", "downtown", "moody", "domain", "airport", "map", "location", "near", "around"]):
         return "location"
-    if any(k in q for k in ["when", "hour", "day", "time", "peak", "trend", "monthly", "daily", "weekly"]):
+    if any(k in q for k in ["when", "hour", "day", "time", "peak", "trend", "monthly", "daily", "weekly", "weekend"]):
         return "temporal"
     if any(k in q for k in ["age", "year-old", "years old", "demographic", "teen", "adult"]):
         return "demographic"
-    if any(k in q for k in ["group", "rider", "party", "size", "capacity", "large"]):
+    if any(k in q for k in ["group", "rider", "party", "size", "capacity", "large", "6+", "8+", "10+"]):
         return "operational"
     return "general"
 
 
 def _extract_age(query: str) -> Dict[str, Any]:
     q = query
-    # 18-24, 18–24, 21+, under 18
-    m = re.search(r"(\d{1,2})\s*[–-]\s*(\d{1,2})", q)
+    ql = q.lower()
+    # Ranges like 18-24
+    m = re.search(r"(\d{1,2})\s*[–-]\s*(\d{1,2})", ql)
     if m:
         a, b = int(m.group(1)), int(m.group(2))
         return {"age_min": min(a, b), "age_max": max(a, b)}
-    m = re.search(r"(\d{1,2})\s*\+", q)
-    if m:
-        return {"age_min": int(m.group(1))}
-    m = re.search(r"under\s*(\d{1,2})", q.lower())
-    if m:
-        return {"age_max": int(m.group(1)) - 1}
+    # Plus pattern only if 'year' context is present
+    if re.search(r"\b(year|years|yr|yrs|yo)\b", ql):
+        m = re.search(r"(\d{1,2})\s*\+", ql)
+        if m:
+            return {"age_min": int(m.group(1))}
+    # Under pattern
+    if re.search(r"\bunder\b", ql) and re.search(r"\b(year|years|yr|yrs|yo)\b", ql):
+        m = re.search(r"under\s*(\d{1,2})", ql)
+        if m:
+            return {"age_max": int(m.group(1)) - 1}
     return {}
 
 
 def _extract_place(query: str) -> Optional[str]:
     q = query.lower()
-    places = ["moody center", "downtown", "domain", "airport", "ut", "sixth street", "6th street"]
+    places = [
+        "moody center",
+        "downtown",
+        "domain",
+        "airport",
+        "ut",
+        "sixth street",
+        "6th street",
+        "south congress",
+        "rainey",
+        "rainey street",
+        "east austin",
+    ]
     for p in places:
         if p in q:
             return p
@@ -73,7 +91,6 @@ def _extract_place(query: str) -> Optional[str]:
 def _extract_time(query: str) -> Dict[str, Any]:
     q = query.lower()
     ent: Dict[str, Any] = {}
-    # Relative time
     if "last month" in q:
         ent["relative_time"] = "last_month"
     if "this month" in q:
@@ -82,11 +99,9 @@ def _extract_time(query: str) -> Dict[str, Any]:
         ent["relative_time"] = "last_week"
     if "weekend" in q or "weekends" in q:
         ent.setdefault("days", []).extend(["Friday", "Saturday", "Sunday"])
-    # Specific days
     for day in ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]:
         if day in q:
             ent.setdefault("days", []).append(day.capitalize())
-    # Night hours
     if "night" in q or "late" in q:
         ent["hour_range"] = (20, 3)
     return ent
@@ -117,14 +132,74 @@ def extract_entities(query: str) -> Dict[str, Any]:
     return ent
 
 
+def _normalize_entities(entities: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in (entities or {}).items():
+        if k in {"age_min", "age_max", "group_size_min", "group_size_eq"}:
+            try:
+                out[k] = int(v)
+            except Exception:
+                continue
+        elif k == "hour_range" and isinstance(v, (list, tuple)) and len(v) == 2:
+            try:
+                out[k] = (int(v[0]) % 24, int(v[1]) % 24)
+            except Exception:
+                pass
+        elif k == "days" and isinstance(v, list):
+            out[k] = [str(d).capitalize() for d in v]
+        elif isinstance(v, str):
+            out[k] = v.strip()
+        else:
+            out[k] = v
+    # If group size is present, drop accidental age bounds inferred from patterns like '6+'
+    if ("group_size_min" in out or "group_size_eq" in out):
+        out.pop("age_min", None)
+        out.pop("age_max", None)
+    return out
+
+
+def _parse_with_gemini(query: str) -> Optional[Tuple[str, Dict[str, Any]]]:
+    if _model is None:
+        return None
+    prompt = (
+        "Extract the user's intent and entities from the question for Austin rideshare analytics.\n"
+        "Return strictly JSON with keys: intent (one of: location, temporal, demographic, operational, general) and entities (object).\n"
+        "Recognize optional entities: place, age_min, age_max, relative_time (last_month|this_month|last_week), days (list of weekday names), hour_range ([start,end]), group_size_min, group_size_eq.\n"
+        "Do not add any text outside JSON.\n\n"
+        f"Question: {query}\n\n"
+        "Example JSON: {\"intent\": \"location\", \"entities\": {\"place\": \"downtown\"}}"
+    )
+    try:
+        resp = _model.generate_content(prompt)
+        text = getattr(resp, "text", None) or ""
+        m = re.search(r"\{[\s\S]*\}$", text.strip())
+        raw = m.group(0) if m else text.strip()
+        data = json.loads(raw)
+        intent = str(data.get("intent") or "").strip().lower() or "general"
+        entities = _normalize_entities(data.get("entities") or {})
+        return intent, entities
+    except Exception:
+        return None
+
+
+def parse_query(query: str) -> Tuple[str, Dict[str, Any]]:
+    parsed = _parse_with_gemini(query)
+    if parsed:
+        intent_g, ents_g = parsed
+        intent_h = classify_intent(query)
+        ents_h = extract_entities(query)
+        intent = intent_g if intent_g != "general" else intent_h
+        merged = {**ents_h, **ents_g}
+        return intent, _normalize_entities(merged)
+    return classify_intent(query), _normalize_entities(extract_entities(query))
+
+
 def generate_response(query: str, intent: str, entities: Dict[str, Any], context: Dict[str, Any]) -> str:
-    """Use Gemini if available, otherwise return a templated summary."""
     summary = context.get("summary") or "I analyzed the data and prepared insights below."
     bullets = context.get("highlights") or []
     stats = context.get("stats") or {}
 
     if _model is None:
-        # Simple fallback
         lines = [summary]
         if bullets:
             lines.append("")

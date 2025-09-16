@@ -58,7 +58,8 @@ def _coalesce_columns(df: pd.DataFrame, targets: Dict[str, List[str]]) -> pd.Dat
 def _parse_datetime(series: pd.Series) -> pd.Series:
     if series is None:
         return series
-    dt = pd.to_datetime(series, errors="coerce", utc=True)
+    # Try common datetime formats first to avoid parsing warnings
+    dt = pd.to_datetime(series, errors="coerce", format="mixed", utc=True)
     try:
         # Convert to US Central time
         dt = dt.dt.tz_convert("America/Chicago")
@@ -81,16 +82,16 @@ def _add_trip_features(trips: pd.DataFrame) -> pd.DataFrame:
         trips,
         {
             "trip_id": [r"^trip[_\s-]*id$", r"^id$"],
-            "booker_user_id": [r"user[_\s-]*id.*book", r"booker[_\s-]*id", r"user[_\s-]*id$"],
-            "pickup_latitude": [r"pickup.*lat"],
-            "pickup_longitude": [r"pickup.*(lon|lng|long)"],
-            "dropoff_latitude": [r"drop[-_\s]*off.*lat", r"dropoff.*lat"],
-            "dropoff_longitude": [r"drop[-_\s]*off.*(lon|lng|long)", r"dropoff.*(lon|lng|long)"],
-            "pickup_address": [r"pickup.*address"],
-            "dropoff_address": [r"drop[-_\s]*off.*address", r"dropoff.*address"],
-            "pickup_time": [r"pickup.*(time|timestamp|date)", r"^pickup$"],
+            "booker_user_id": [r"booking.*user.*id", r"user[_\s-]*id.*book", r"booker[_\s-]*id", r"user[_\s-]*id$"],
+            "pickup_latitude": [r"pick.*up.*lat"],
+            "pickup_longitude": [r"pick.*up.*(lon|lng|long)"],
+            "dropoff_latitude": [r"drop.*off.*lat"],
+            "dropoff_longitude": [r"drop.*off.*(lon|lng|long)"],
+            "pickup_address": [r"pick.*up.*address"],
+            "dropoff_address": [r"drop.*off.*address"],
+            "pickup_time": [r"trip.*date.*time", r"pickup.*(time|timestamp|date)", r"^pickup$"],
             "dropoff_time": [r"drop[-_\s]*off.*(time|timestamp|date)", r"dropoff.*(time|timestamp|date)", r"^dropoff$"],
-            "num_riders": [r"(num|number|party|group).*rider|party[_\s-]*size", r"riders$"],
+            "num_riders": [r"total.*passengers", r"(num|number|party|group).*rider|party[_\s-]*size", r"riders$"],
         },
     )
 

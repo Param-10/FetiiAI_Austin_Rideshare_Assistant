@@ -7,8 +7,7 @@ from dotenv import load_dotenv
 from data_processor import load_datasets
 from ai_engine import (
     configure_gemini,
-    classify_intent,
-    extract_entities,
+    parse_query,
     generate_response,
 )
 from analytics import answer_query
@@ -89,8 +88,7 @@ if user_query:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
-            intent = classify_intent(user_query)
-            entities = extract_entities(user_query)
+            intent, entities = parse_query(user_query)
             context, figures = answer_query(trips, riders, demographics, intent, entities)
             response = generate_response(
                 query=user_query,
@@ -121,4 +119,6 @@ if user_query:
                 else:
                     st.write(fig)
 
-    st.session_state.messages.append({"role": "assistant", "content": response})
+        st.session_state.messages.append({"role": "assistant", "content": response})
+        # Force rerun to show the chat input again
+        st.rerun()
