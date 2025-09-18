@@ -151,16 +151,7 @@ if user_query:
                 st.session_state.query_times = st.session_state.query_times[-20:]
             st.markdown(response)
             
-            # Export functionality for filtered data
-            filtered_data_stats = context.get("stats", {}).get("Trips (filtered)", 0)
-            if filtered_data_stats > 0:
-                from visualizations import export_data_as_csv
-                # Create a simple filtered dataset for export (without complex analytics columns)
-                export_df = trips.head(min(1000, len(trips)))  # Limit to first 1000 for performance
-                download_link = export_data_as_csv(export_df, f"austin_rideshare_data_{filtered_data_stats}_trips")
-                st.markdown(download_link, unsafe_allow_html=True)
-            
-            for i, fig in enumerate(figures):
+            for fig in figures:
                 if fig is None:
                     continue
                 # Plotly
@@ -168,11 +159,6 @@ if user_query:
                     import plotly.graph_objects as go
                     if isinstance(fig, go.Figure):
                         st.plotly_chart(fig, use_container_width=True)
-                        # Add export functionality for charts
-                        from visualizations import create_chart_download_button
-                        chart_name = f"austin_rideshare_chart_{i+1}"
-                        download_button = create_chart_download_button(fig, chart_name)
-                        st.markdown(download_button, unsafe_allow_html=True)
                         continue
                 except Exception:
                     pass

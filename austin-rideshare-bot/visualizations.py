@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 from typing import Optional
-from io import BytesIO
-import base64
 
 import folium
 import pandas as pd
@@ -20,15 +18,27 @@ def plot_time_series(trips: pd.DataFrame, time_col: str = "event_time") -> go.Fi
     if df.empty:
         return go.Figure()
     df = df.sort_values(time_col)
+    
+    # Create a proper date column for grouping (remove time component)
+    df['date_only'] = df[time_col].dt.date
+    
+    # Group by date and count trips
     ts = (
-        df.set_index(time_col)
-        .assign(count=1)
-        .resample("D")["count"]
-        .sum()
-        .reset_index()
+        df.groupby('date_only')
+        .size()
+        .reset_index(name='count')
     )
-    fig = px.line(ts, x=time_col, y="count", title="Trips Over Time")
-    fig.update_layout(margin=dict(l=0, r=0, t=50, b=0))
+    
+    # Convert date_only back to datetime for proper plotting
+    ts['date_only'] = pd.to_datetime(ts['date_only'])
+    
+    fig = px.line(ts, x='date_only', y='count', title="Trips Over Time")
+    fig.update_layout(
+        margin=dict(l=0, r=0, t=50, b=0),
+        xaxis_title="Date",
+        yaxis_title="Number of Trips",
+        xaxis=dict(tickformat="%Y-%m-%d")
+    )
     return fig
 
 
@@ -115,33 +125,3 @@ def make_map_html(
         folium.map.CustomPane("title").add_to(m)
 
     return m._repr_html_()
-
-
-def export_data_as_csv(df: pd.DataFrame, filename: str = "filtered_trips") -> str:
-    """Export filtered data as CSV and return download link"""
-    csv = df.to_csv(index=False)
-    b64 = base64.b64encode(csv.encode()).decode()
-    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}.csv">📄 Download Data as CSV</a>'
-    return href
-
-
-def create_chart_download_button(fig: go.Figure, filename: str = "chart") -> str:
-    """Create download button for Plotly charts"""
-    try:
-        # Export as PNG
-        img_bytes = fig.to_image(format="png", width=800, height=600)
-        b64_png = base64.b64encode(img_bytes).decode()
-        png_href = f'<a href="data:image/png;base64,{b64_png}" download="{filename}.png">🖼️ Download Chart as PNG</a>'
-        
-        # Export as HTML
-        html_str = fig.to_html(include_plotlyjs='cdn')
-        b64_html = base64.b64encode(html_str.encode()).decode()
-        html_href = f'<a href="data:text/html;base64,{b64_html}" download="{filename}.html">📊 Download Interactive Chart</a>'
-        
-        return f'<div style="margin: 10px 0;">{png_href} | {html_href}</div>'
-    except Exception:
-        # Fallback if image export fails (requires kaleido)
-        html_str = fig.to_html(include_plotlyjs='cdn')
-        b64_html = base64.b64encode(html_str.encode()).decode()
-        html_href = f'<a href="data:text/html;base64,{b64_html}" download="{filename}.html">📊 Download Interactive Chart</a>'
-        return f'<div style="margin: 10px 0;">{html_href}</div>'
