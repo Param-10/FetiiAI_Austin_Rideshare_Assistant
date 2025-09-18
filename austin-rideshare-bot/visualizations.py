@@ -10,34 +10,34 @@ import plotly.graph_objects as go
 
 def plot_time_series(trips: pd.DataFrame, time_col: str = "event_time") -> go.Figure:
     df = trips.copy()
-    if time_col not in df or df.empty:
-        return go.Figure()
+    if time_col not in df or df.empty or df[time_col].isna().all():
+        return go.Figure(layout={"title": "Trips Over Time (No Data)"})
+
     # Coerce and drop NaT before resampling
     df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
     df = df.dropna(subset=[time_col])
+
     if df.empty:
-        return go.Figure()
-    df = df.sort_values(time_col)
-    
-    # Create a proper date column for grouping (remove time component)
-    df['date_only'] = df[time_col].dt.date
-    
+        return go.Figure(layout={"title": "Trips Over Time (No Data)"})
+
+    # Create a date column for grouping
+    df['date'] = df[time_col].dt.date
+
     # Group by date and count trips
-    ts = (
-        df.groupby('date_only')
-        .size()
-        .reset_index(name='count')
-    )
+    ts = df.groupby('date').size().reset_index(name='trips')
+    ts = ts.rename(columns={'date': 'Date', 'trips': 'Number of Trips'})
     
-    # Convert date_only back to datetime for proper plotting
-    ts['date_only'] = pd.to_datetime(ts['date_only'])
-    
-    fig = px.line(ts, x='date_only', y='count', title="Trips Over Time")
+    # Ensure the Date column is sorted for the line chart
+    ts = ts.sort_values(by='Date')
+
+    fig = px.line(ts, x='Date', y='Number of Trips', title="Trips Over Time", markers=True)
+
     fig.update_layout(
-        margin=dict(l=0, r=0, t=50, b=0),
+        margin=dict(l=60, r=20, t=50, b=50),
         xaxis_title="Date",
         yaxis_title="Number of Trips",
-        xaxis=dict(tickformat="%Y-%m-%d")
+        xaxis=dict(tickformat="%Y-%m-%d"),
+        yaxis=dict(rangemode='tozero')  # Ensure y-axis starts at 0
     )
     return fig
 
@@ -83,11 +83,22 @@ def plot_top_locations(
 def plot_hourly_pattern(trips: pd.DataFrame) -> go.Figure:
     df = trips.copy()
     if df.empty or "hour" not in df.columns:
-        return go.Figure()
+        return go.Figure(layout={"title": "Hourly Pickup Pattern (No Data)"})
     counts = df["hour"].value_counts().sort_index().reset_index()
     counts.columns = ["hour", "trips"]
+
+    # Ensure all 24 hours are present for a consistent look
+    all_hours = pd.DataFrame({'hour': range(24)})
+    counts = pd.merge(all_hours, counts, on='hour', how='left').fillna(0)
+
     fig = px.bar(counts, x="hour", y="trips", title="Hourly Pickup Pattern")
-    fig.update_layout(margin=dict(l=0, r=0, t=50, b=0))
+    fig.update_layout(
+        height=400,
+        margin=dict(l=60, r=20, t=50, b=50),
+        xaxis_title="Hour of Day (24-hour format)",
+        yaxis_title="Number of Trips",
+        xaxis=dict(tickmode='linear', dtick=1) # Ensure all hour ticks are shown
+    )
     return fig
 
 

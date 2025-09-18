@@ -107,6 +107,10 @@ def _add_trip_features(trips: pd.DataFrame) -> pd.DataFrame:
 
     # Derived time features
     if pd.api.types.is_datetime64_any_dtype(trips["event_time"]):
+        # Filter out trips with future dates, assuming data cannot be from the future
+        now_in_chicago = pd.Timestamp.now(tz='America/Chicago')
+        trips = trips[trips["event_time"] <= now_in_chicago].copy()
+
         trips["hour"] = trips["event_time"].dt.hour
         trips["day_of_week"] = trips["event_time"].dt.day_name()
         trips["date"] = trips["event_time"].dt.date

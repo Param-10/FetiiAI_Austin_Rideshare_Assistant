@@ -37,7 +37,7 @@ def classify_intent(query: str) -> str:
     q = (query or "").lower()
     if any(k in q for k in ["where", "pickup", "dropoff", "downtown", "moody", "domain", "airport", "map", "location", "near", "around"]):
         return "location"
-    if any(k in q for k in ["when", "hour", "day", "time", "peak", "trend", "monthly", "daily", "weekly", "weekend"]):
+    if any(k in q for k in ["when", "hour", "day", "time", "peak", "trend", "monthly", "daily", "weekly", "weekend", "over time"]):
         return "temporal"
     if any(k in q for k in ["age", "year-old", "years old", "demographic", "teen", "adult"]):
         return "demographic"
@@ -183,15 +183,33 @@ def _parse_with_gemini(query: str) -> Optional[Tuple[str, Dict[str, Any]]]:
 
 
 def parse_query(query: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Parse the user query to determine intent and entities.
+    This function uses a hybrid approach:
+    1. A fast, local keyword-based classifier (`classify_intent`) is tried first.
+    2. If the local classifier returns a specific intent, it's used immediately.
+    3. If the local classifier returns "general", a more powerful Gemini model is used.
+    """
+    # First, use the reliable local classifier
+    intent_h = classify_intent(query)
+    ents_h = extract_entities(query)
+
+    # If the local classifier finds a specific intent, trust it and we're done.
+    if intent_h != "general":
+        return intent_h, _normalize_entities(ents_h)
+
+    # If local classification is "general", try the more powerful Gemini parser
     parsed = _parse_with_gemini(query)
     if parsed:
         intent_g, ents_g = parsed
-        intent_h = classify_intent(query)
-        ents_h = extract_entities(query)
-        intent = intent_g if intent_g != "general" else intent_h
+        # Merge entities, giving Gemini's results priority for richness
         merged = {**ents_h, **ents_g}
-        return intent, _normalize_entities(merged)
-    return classify_intent(query), _normalize_entities(extract_entities(query))
+        # Trust Gemini's intent if it found something specific
+        final_intent = intent_g if intent_g != "general" else intent_h
+        return final_intent, _normalize_entities(merged)
+
+    # Fallback to local if Gemini fails completely
+    return intent_h, _normalize_entities(ents_h)
 
 
 def generate_response(query: str, intent: str, entities: Dict[str, Any], context: Dict[str, Any]) -> str:
