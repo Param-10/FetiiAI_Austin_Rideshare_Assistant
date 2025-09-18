@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Optional
+from io import BytesIO
+import base64
 
 import folium
 import pandas as pd
@@ -113,3 +115,33 @@ def make_map_html(
         folium.map.CustomPane("title").add_to(m)
 
     return m._repr_html_()
+
+
+def export_data_as_csv(df: pd.DataFrame, filename: str = "filtered_trips") -> str:
+    """Export filtered data as CSV and return download link"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}.csv">📄 Download Data as CSV</a>'
+    return href
+
+
+def create_chart_download_button(fig: go.Figure, filename: str = "chart") -> str:
+    """Create download button for Plotly charts"""
+    try:
+        # Export as PNG
+        img_bytes = fig.to_image(format="png", width=800, height=600)
+        b64_png = base64.b64encode(img_bytes).decode()
+        png_href = f'<a href="data:image/png;base64,{b64_png}" download="{filename}.png">🖼️ Download Chart as PNG</a>'
+        
+        # Export as HTML
+        html_str = fig.to_html(include_plotlyjs='cdn')
+        b64_html = base64.b64encode(html_str.encode()).decode()
+        html_href = f'<a href="data:text/html;base64,{b64_html}" download="{filename}.html">📊 Download Interactive Chart</a>'
+        
+        return f'<div style="margin: 10px 0;">{png_href} | {html_href}</div>'
+    except Exception:
+        # Fallback if image export fails (requires kaleido)
+        html_str = fig.to_html(include_plotlyjs='cdn')
+        b64_html = base64.b64encode(html_str.encode()).decode()
+        html_href = f'<a href="data:text/html;base64,{b64_html}" download="{filename}.html">📊 Download Interactive Chart</a>'
+        return f'<div style="margin: 10px 0;">{html_href}</div>'

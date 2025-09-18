@@ -40,6 +40,90 @@ def _haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return R * c
 
 
+def _calculate_trip_distances(df: pd.DataFrame) -> pd.DataFrame:
+    """Add trip distance calculations to dataframe"""
+    df = df.copy()
+    
+    # Use the correct column names based on actual data
+    pickup_lat_col = 'pickup_latitude' if 'pickup_latitude' in df.columns else 'pick_up_latitude'
+    pickup_lon_col = 'pickup_longitude' if 'pickup_longitude' in df.columns else 'pick_up_longitude'
+    dropoff_lat_col = 'dropoff_latitude' if 'dropoff_latitude' in df.columns else 'drop_off_latitude'
+    dropoff_lon_col = 'dropoff_longitude' if 'dropoff_longitude' in df.columns else 'drop_off_longitude'
+    
+    required_cols = [pickup_lat_col, pickup_lon_col, dropoff_lat_col, dropoff_lon_col]
+    
+    if all(col in df.columns for col in required_cols):
+        # Calculate distances for each trip
+        distances = []
+        for idx, row in df.iterrows():
+            if (pd.notna(row.get(pickup_lat_col)) and pd.notna(row.get(pickup_lon_col)) and
+                pd.notna(row.get(dropoff_lat_col)) and pd.notna(row.get(dropoff_lon_col))):
+                dist = _haversine_km(
+                    row[pickup_lat_col], row[pickup_lon_col],
+                    row[dropoff_lat_col], row[dropoff_lon_col]
+                )
+                distances.append(dist)
+            else:
+                distances.append(np.nan)
+        
+        df['trip_distance_km'] = distances
+    else:
+        df['trip_distance_km'] = np.nan
+    
+    return df
+
+
+def _estimate_trip_costs(df: pd.DataFrame) -> pd.DataFrame:
+    """Add estimated trip cost calculations"""
+    df = df.copy()
+    
+    # Austin rideshare pricing model (approximate)
+    BASE_FARE = 2.50
+    COST_PER_KM = 1.20
+    COST_PER_MINUTE = 0.25
+    SURGE_MULTIPLIER = 1.0  # Could be dynamic based on time/location
+    
+    # Estimate trip duration based on distance (avg 30 km/h in city)
+    df['estimated_duration_min'] = df.get('trip_distance_km', 0) * 2.0  # 30 km/h = 2 min/km
+    
+    # Calculate estimated cost
+    distance_cost = df.get('trip_distance_km', 0) * COST_PER_KM
+    time_cost = df.get('estimated_duration_min', 0) * COST_PER_MINUTE
+    
+    df['estimated_cost_usd'] = (BASE_FARE + distance_cost + time_cost) * SURGE_MULTIPLIER
+    df['cost_per_passenger'] = df['estimated_cost_usd'] / df.get('num_riders', 1)
+    
+    return df
+
+
+def _analyze_route_efficiency(df: pd.DataFrame) -> Dict[str, Any]:
+    """Analyze route efficiency and optimization opportunities"""
+    if 'trip_distance_km' not in df.columns:
+        return {}
+    
+    valid_distances = df['trip_distance_km'].dropna()
+    if len(valid_distances) == 0:
+        return {}
+    
+    analysis = {
+        'avg_trip_distance': f"{valid_distances.mean():.2f} km",
+        'median_trip_distance': f"{valid_distances.median():.2f} km",
+        'longest_trip': f"{valid_distances.max():.2f} km",
+        'shortest_trip': f"{valid_distances.min():.2f} km",
+    }
+    
+    # Identify potentially inefficient routes (very short or very long)
+    short_trips = len(valid_distances[valid_distances < 1.0])  # < 1km
+    long_trips = len(valid_distances[valid_distances > 20.0])  # > 20km
+    
+    if short_trips > 0:
+        analysis['short_trips'] = f"{short_trips} trips under 1km (consider walking/biking)"
+    if long_trips > 0:
+        analysis['long_trips'] = f"{long_trips} trips over 20km (consider alternative transport)"
+    
+    return analysis
+
+
 def _within_place(df: pd.DataFrame, place: Place, lat_col: str, lon_col: str) -> pd.Series:
     if df.empty or not {lat_col, lon_col}.issubset(df.columns):
         return pd.Series([False] * len(df), index=df.index)
@@ -63,6 +147,39 @@ def _within_place(df: pd.DataFrame, place: Place, lat_col: str, lon_col: str) ->
     out = pd.Series([False] * len(df), index=df.index)
     out.loc[mask] = dist_km <= place.radius_km
     return out
+
+
+def _apply_sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply sidebar filters from session state"""
+    try:
+        import streamlit as st
+        
+        # Apply date filter
+        if hasattr(st, 'session_state') and 'date_filter' in st.session_state:
+            date_range = st.session_state['date_filter']
+            if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                start_date, end_date = date_range
+                if 'event_time' in df.columns:
+                    df = df[
+                        (df['event_time'].dt.date >= start_date) & 
+                        (df['event_time'].dt.date <= end_date)
+                    ]
+        
+        # Apply rider count filter
+        if hasattr(st, 'session_state') and 'rider_filter' in st.session_state:
+            rider_range = st.session_state['rider_filter']
+            if isinstance(rider_range, (list, tuple)) and len(rider_range) == 2:
+                min_riders, max_riders = rider_range
+                if 'num_riders' in df.columns:
+                    df = df[
+                        (df['num_riders'] >= min_riders) & 
+                        (df['num_riders'] <= max_riders)
+                    ]
+        
+        return df
+    except Exception:
+        # If streamlit not available or error, return original df
+        return df
 
 
 def _filter_by_entities(trips: pd.DataFrame, entities: Dict[str, Any]) -> pd.DataFrame:
@@ -193,8 +310,15 @@ def answer_query(
     figures: List[Any] = []
     context: Dict[str, Any] = {"stats": {}}
 
+    # Add advanced analytics to trips data
+    trips_with_analytics = _calculate_trip_distances(trips)
+    trips_with_analytics = _estimate_trip_costs(trips_with_analytics)
+
+    # Apply sidebar filters first
+    trips_filtered = _apply_sidebar_filters(trips_with_analytics)
+
     # Pre-filter by entities
-    filtered = _filter_by_entities(trips, entities)
+    filtered = _filter_by_entities(trips_filtered, entities)
 
     if intent == "location":
         # Optional place filter
@@ -343,5 +467,26 @@ def answer_query(
             else "n/a"
         ),
     })
+
+    # Add advanced analytics to context
+    if not filtered.empty:
+        # Route efficiency analysis
+        route_analysis = _analyze_route_efficiency(filtered)
+        if route_analysis:
+            context["stats"].update(route_analysis)
+        
+        # Cost analysis
+        if 'estimated_cost_usd' in filtered.columns:
+            valid_costs = filtered['estimated_cost_usd'].dropna()
+            if len(valid_costs) > 0:
+                context["stats"]["avg_trip_cost"] = f"${valid_costs.mean():.2f}"
+                context["stats"]["avg_cost_per_passenger"] = f"${filtered['cost_per_passenger'].dropna().mean():.2f}"
+                
+        # Distance analysis
+        if 'trip_distance_km' in filtered.columns:
+            valid_distances = filtered['trip_distance_km'].dropna()
+            if len(valid_distances) > 0:
+                total_distance = valid_distances.sum()
+                context["stats"]["total_distance"] = f"{total_distance:.1f} km"
 
     return context, figures

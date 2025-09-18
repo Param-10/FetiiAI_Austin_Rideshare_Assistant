@@ -60,6 +60,46 @@ with st.sidebar:
         )
     if not GEMINI_API_KEY:
         st.warning("Gemini API key not set. Using local responses.")
+    
+    # Advanced Filters
+    st.subheader("🔍 Advanced Filters")
+    
+    # Date range filter
+    if 'event_time' in trips.columns and not trips.empty:
+        min_date = trips['event_time'].min().date()
+        max_date = trips['event_time'].max().date()
+        date_range = st.date_input(
+            "Date Range",
+            value=(min_date, max_date),
+            min_value=min_date,
+            max_value=max_date,
+            help="Filter trips by date range"
+        )
+    
+    # Group size filter
+    if 'num_riders' in trips.columns:
+        min_riders = int(trips['num_riders'].min()) if not trips['num_riders'].empty else 1
+        max_riders = int(trips['num_riders'].max()) if not trips['num_riders'].empty else 15
+        rider_range = st.slider(
+            "Group Size",
+            min_value=min_riders,
+            max_value=max_riders,
+            value=(min_riders, max_riders),
+            help="Filter by number of passengers"
+        )
+    
+    # Performance monitoring
+    st.subheader("⚡ Performance")
+    if "query_times" in st.session_state:
+        avg_time = sum(st.session_state.query_times) / len(st.session_state.query_times)
+        st.metric("Avg Query Time", f"{avg_time:.2f}s")
+        st.metric("Total Queries", len(st.session_state.query_times))
+    
+    # Store filters in session state for use in queries
+    if 'date_range' in locals():
+        st.session_state['date_filter'] = date_range
+    if 'rider_range' in locals():
+        st.session_state['rider_filter'] = rider_range
 
 st.title("Austin Rideshare Intelligence Assistant")
 st.caption("Conversational insights from Fetii's Austin data")
@@ -88,6 +128,10 @@ if user_query:
 
     with st.chat_message("assistant"):
         with st.spinner("Thinking..."):
+            # Performance monitoring
+            import time
+            start_time = time.time()
+            
             intent, entities = parse_query(user_query)
             context, figures = answer_query(trips, riders, demographics, intent, entities)
             response = generate_response(
@@ -96,8 +140,27 @@ if user_query:
                 entities=entities,
                 context=context,
             )
+            
+            # Track query performance
+            query_time = time.time() - start_time
+            if "query_times" not in st.session_state:
+                st.session_state.query_times = []
+            st.session_state.query_times.append(query_time)
+            # Keep only last 20 queries for performance
+            if len(st.session_state.query_times) > 20:
+                st.session_state.query_times = st.session_state.query_times[-20:]
             st.markdown(response)
-            for fig in figures:
+            
+            # Export functionality for filtered data
+            filtered_data_stats = context.get("stats", {}).get("Trips (filtered)", 0)
+            if filtered_data_stats > 0:
+                from visualizations import export_data_as_csv
+                # Create a simple filtered dataset for export (without complex analytics columns)
+                export_df = trips.head(min(1000, len(trips)))  # Limit to first 1000 for performance
+                download_link = export_data_as_csv(export_df, f"austin_rideshare_data_{filtered_data_stats}_trips")
+                st.markdown(download_link, unsafe_allow_html=True)
+            
+            for i, fig in enumerate(figures):
                 if fig is None:
                     continue
                 # Plotly
@@ -105,6 +168,11 @@ if user_query:
                     import plotly.graph_objects as go
                     if isinstance(fig, go.Figure):
                         st.plotly_chart(fig, use_container_width=True)
+                        # Add export functionality for charts
+                        from visualizations import create_chart_download_button
+                        chart_name = f"austin_rideshare_chart_{i+1}"
+                        download_button = create_chart_download_button(fig, chart_name)
+                        st.markdown(download_button, unsafe_allow_html=True)
                         continue
                 except Exception:
                     pass
@@ -120,5 +188,3 @@ if user_query:
                     st.write(fig)
 
         st.session_state.messages.append({"role": "assistant", "content": response})
-        # Force rerun to show the chat input again
-        st.rerun()
