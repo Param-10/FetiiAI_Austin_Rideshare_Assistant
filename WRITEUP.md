@@ -1,8 +1,8 @@
 ## FetiiAI Austin Rideshare Assistant
 
-### What We Built
+### What I Built
 
-We built Riley, a conversational AI assistant that knows everything about Fetii's rideshare data in Austin, Texas. Think ChatGPT but for Austin transportation patterns. Riley can answer questions about where people go, when they travel, and what the data reveals about Austin's group transportation scene.
+I built Riley, a conversational AI assistant that knows everything about Fetii's rideshare data in Austin, Texas. Think ChatGPT but for Austin transportation patterns. Riley can answer questions about where people go, when they travel, and what the data reveals about Austin's group transportation scene.
 
 The assistant processes over 2,000 recent rideshare trips and provides insights through natural conversation. Instead of charts and graphs, Riley talks you through the data with specific examples, interesting facts, and follow up questions that keep the conversation flowing.
 
@@ -16,7 +16,7 @@ The system runs on Python with several key components working together.
 
 **Pandas** handles all the data processing. The system loads rideshare trip data and calculates distances, costs, peak hours, popular routes, and demographic breakdowns. It can work with Excel files or CSV backups automatically.
 
-**Google Gemini 2.0 Flash** provides the natural language understanding and response generation. We built a smart intent classification system that recognizes different types of questions, from location queries to casual conversation.
+**Google Gemini 2.0 Flash** provides the natural language understanding and response generation. I built a smart intent classification system that recognizes different types of questions, from location queries to casual conversation.
 
 **Custom Analytics Engine** processes user questions by filtering the data based on what they're asking about. It finds relevant patterns, calculates statistics, and identifies interesting insights like popular short routes perfect for scooters.
 
