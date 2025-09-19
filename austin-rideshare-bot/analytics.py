@@ -149,6 +149,17 @@ def _within_place(df: pd.DataFrame, place: Place, lat_col: str, lon_col: str) ->
     return out
 
 
+def _get_current_theme() -> str:
+    """Get current theme from streamlit session state."""
+    try:
+        import streamlit as st
+        if hasattr(st, 'session_state') and 'theme' in st.session_state:
+            return st.session_state['theme']
+    except Exception:
+        pass
+    return "dark"  # Default theme
+
+
 def _apply_sidebar_filters(df: pd.DataFrame) -> pd.DataFrame:
     """Apply sidebar filters from session state"""
     try:
@@ -211,11 +222,29 @@ def _filter_by_entities(trips: pd.DataFrame, entities: Dict[str, Any]) -> pd.Dat
         if pd.api.types.is_datetime64_any_dtype(df["event_time"]) and not t.empty:
             max_time = t.max()
             if entities["relative_time"] == "last_month":
-                target_period = (max_time - pd.offsets.MonthBegin(1)).to_period("M")
-                df = df[df["event_time"].dt.to_period("M") == target_period]
+                # Handle timezone-aware datetimes properly to avoid warnings
+                if max_time.tz:
+                    # Remove timezone info before converting to period
+                    max_time_naive = max_time.tz_localize(None)
+                    target_period = (max_time_naive - pd.offsets.MonthBegin(1)).to_period("M")
+                    # Remove timezone from event_time before converting to period
+                    event_time_naive = df["event_time"].dt.tz_localize(None)
+                    df = df[event_time_naive.dt.to_period("M") == target_period]
+                else:
+                    target_period = (max_time - pd.offsets.MonthBegin(1)).to_period("M")
+                    df = df[df["event_time"].dt.to_period("M") == target_period]
             elif entities["relative_time"] == "this_month":
-                target_period = max_time.to_period("M")
-                df = df[df["event_time"].dt.to_period("M") == target_period]
+                # Handle timezone-aware datetimes properly to avoid warnings
+                if max_time.tz:
+                    # Remove timezone info before converting to period
+                    max_time_naive = max_time.tz_localize(None)
+                    target_period = max_time_naive.to_period("M")
+                    # Remove timezone from event_time before converting to period
+                    event_time_naive = df["event_time"].dt.tz_localize(None)
+                    df = df[event_time_naive.dt.to_period("M") == target_period]
+                else:
+                    target_period = max_time.to_period("M")
+                    df = df[df["event_time"].dt.to_period("M") == target_period]
             elif entities["relative_time"] == "last_week":
                 week_start = (max_time.normalize() - pd.Timedelta(days=7))
                 df = df[(df["event_time"] >= week_start) & (df["event_time"] <= max_time)]
@@ -285,6 +314,41 @@ def _top_locations(df: pd.DataFrame, address_col: str = "dropoff_address", loc_c
     return []
 
 
+def _analyze_short_routes(df: pd.DataFrame, max_distance: float = 3.0) -> List[str]:
+    """Analyze common short routes (under specified km) for scooter-friendly insights."""
+    if df.empty or 'trip_distance_km' not in df.columns:
+        return []
+    
+    short_trips = df[df['trip_distance_km'] <= max_distance]
+    if short_trips.empty:
+        return []
+    
+    routes = []
+    
+    # Check if we have both pickup and dropoff addresses
+    if ('pickup_address' in short_trips.columns and 'dropoff_address' in short_trips.columns):
+        route_pairs = short_trips.dropna(subset=['pickup_address', 'dropoff_address'])
+        if not route_pairs.empty:
+            # Create route strings and count frequencies
+            route_pairs['route'] = route_pairs['pickup_address'].str[:30] + " → " + route_pairs['dropoff_address'].str[:30]
+            top_routes = route_pairs['route'].value_counts().head(3)
+            
+            for route, count in top_routes.items():
+                if count >= 2:  # Only show routes with multiple occurrences
+                    distance_avg = route_pairs[route_pairs['route'] == route]['trip_distance_km'].mean()
+                    routes.append(f"{route} ({count} trips, avg {distance_avg:.1f}km)")
+    
+    # Fallback to just dropoff locations if no route pairs
+    if not routes:
+        top_short_drops = _top_locations(short_trips, top_n=3)
+        for location, count in top_short_drops:
+            if count >= 2:
+                avg_dist = short_trips[short_trips['dropoff_address'].str.contains(location[:20], na=False)]['trip_distance_km'].mean()
+                routes.append(f"{location[:40]} ({count} short trips, avg {avg_dist:.1f}km)")
+    
+    return routes[:3]  # Return top 3 short routes
+
+
 def _peak_hours(df: pd.DataFrame, top_k: int = 3) -> List[int]:
     if df.empty or "hour" not in df.columns:
         return []
@@ -302,14 +366,41 @@ def answer_query(
     demographics: pd.DataFrame,
     intent: str,
     entities: Dict[str, Any],
+    conversation_context: Dict[str, Any] = None,
 ) -> Tuple[Dict[str, Any], List[Any]]:
     """Return (context, figures)."""
     if trips is None or trips.empty:
         return ({"summary": "I couldn't find trip data.", "highlights": []}, [])
 
+    # Chat-only: do not return figures
     figures: List[Any] = []
     context: Dict[str, Any] = {"stats": {}}
+    conversation_context = conversation_context or {}
 
+    # Handle continuing previous question
+    if intent == "continue_previous":
+        last_topic = conversation_context.get("last_question_topic", "")
+        if last_topic == "group_sizes":
+            # Override intent to focus on group sizes/operational data
+            intent = "operational"
+            # Add context that this is a continuation
+            context["summary"] = "Perfect! Let me show you the group size patterns."
+        elif last_topic == "timing":
+            intent = "temporal"
+            context["summary"] = "Great! Here are the timing patterns."
+        elif last_topic == "locations":
+            intent = "location"
+            context["summary"] = "Awesome! Let me show you the location data."
+        elif last_topic == "demographics":
+            intent = "demographic"
+            context["summary"] = "Sure! Here's the demographic breakdown."
+        else:
+            # Fallback if no previous topic tracked
+            intent = "casual_response"
+
+    # Get current theme for consistent styling
+    current_theme = _get_current_theme()
+    
     # Add advanced analytics to trips data
     trips_with_analytics = _calculate_trip_distances(trips)
     trips_with_analytics = _estimate_trip_costs(trips_with_analytics)
@@ -339,49 +430,87 @@ def answer_query(
         context["summary"] = summary
         context.setdefault("highlights", []).append(summary)
 
-        # Top locations list
+        # Top locations list with more detail
         tops = _top_locations(loc_df)
         if tops:
+            location_details = []
+            for name, cnt in tops[:3]:  # Focus on top 3 for specificity
+                if len(name) > 50:  # If address is long, extract key part
+                    import re
+                    # Try to extract street name or landmark
+                    street_match = re.search(r'(\d+\s+\w+\s+(St|Street|Ave|Avenue|Blvd|Boulevard|Rd|Road))', name)
+                    if street_match:
+                        name = street_match.group(1)
+                    else:
+                        name = name[:30] + "..."
+                location_details.append(f"{name} ({cnt} trips)")
+            
             context.setdefault("highlights", []).append(
-                "Top locations: " + ", ".join([f"{name} ({cnt})" for name, cnt in tops])
+                "Top destinations: " + ", ".join(location_details)
             )
+            
+            # Add insight about short vs long trips if relevant
+            if 'trip_distance_km' in loc_df.columns:
+                short_trips = loc_df[loc_df['trip_distance_km'] < 3].shape[0]
+                total_trips = loc_df.shape[0]
+                if short_trips > 0:
+                    context.setdefault("highlights", []).append(
+                        f"{short_trips} of {total_trips} trips were under 3km (perfect for e-scooters or walking)"
+                    )
+                    
+                    # Add specific short route analysis
+                    short_routes = _analyze_short_routes(loc_df)
+                    if short_routes:
+                        context.setdefault("highlights", []).append(
+                            "Popular short routes: " + "; ".join(short_routes[:2])
+                        )
 
-        # Bar chart
-        bar = plot_top_locations(loc_df)
-        figures.append(bar)
-
-        # Map
-        mhtml = make_map_html(loc_df)
-        if mhtml:
-            figures.append(mhtml)
+        # Chat-only mode: no figures
 
     elif intent == "temporal":
         tdf = filtered
         if tdf.empty:
             # fallback: show overall if filters eliminate all data
             tdf = trips.copy()
-            context["summary"] = "No trips matched the time filters. Showing overall pattern."
+            context["summary"] = "No trips matched the time filters. Showing overall timing patterns."
         else:
-            summary = _summarize_count(tdf, label="Filtered trips")
-            context["summary"] = "Here's how demand changes over time."
-            context.setdefault("highlights", []).append(summary)
+            context["summary"] = "Here's when people are riding."
 
-        # Add peak day/hour if available
+        # Focus on TIMING information for temporal queries
         if not tdf.empty:
+            # Peak hours - most important for "when" questions
+            peaks = _peak_hours(tdf, top_k=3)
+            if peaks:
+                if len(peaks) >= 2:
+                    context.setdefault("highlights", []).append(
+                        f"Peak hours: {peaks[0]}:00, {peaks[1]}:00, and {peaks[2]}:00" if len(peaks) >= 3 else f"Peak hours: {peaks[0]}:00 and {peaks[1]}:00"
+                    )
+                else:
+                    context.setdefault("highlights", []).append(f"Peak hour: {peaks[0]}:00")
+            
+            # Peak days if available
             if "day_of_week" in tdf.columns:
                 vc = tdf["day_of_week"].dropna().value_counts()
-                if not vc.empty:
-                    top_day = vc.idxmax()
-                    context.setdefault("highlights", []).append(f"Peak day: {top_day}")
-            peaks = _peak_hours(tdf)
-            if peaks:
-                context.setdefault("highlights", []).append(
-                    "Peak hours: " + ", ".join(str(h) for h in peaks)
-                )
+                if not vc.empty and len(vc) > 1:
+                    top_days = vc.head(2)
+                    if len(top_days) >= 2:
+                        context.setdefault("highlights", []).append(
+                            f"Busiest days: {top_days.index[0]} ({top_days.iloc[0]} trips) and {top_days.index[1]} ({top_days.iloc[1]} trips)"
+                        )
+                    else:
+                        context.setdefault("highlights", []).append(f"Peak day: {top_days.index[0]} ({top_days.iloc[0]} trips)")
+            
+            # Weekend vs weekday pattern if available
+            if "is_weekend" in tdf.columns:
+                weekend_count = len(tdf[tdf["is_weekend"] == True])
+                weekday_count = len(tdf[tdf["is_weekend"] == False])
+                if weekend_count > 0 and weekday_count > 0:
+                    if weekend_count > weekday_count:
+                        context.setdefault("highlights", []).append(f"More weekend activity: {weekend_count} weekend trips vs {weekday_count} weekday trips")
+                    else:
+                        context.setdefault("highlights", []).append(f"More weekday activity: {weekday_count} weekday trips vs {weekend_count} weekend trips")
 
-        ts_fig = plot_time_series(tdf)
-        hr_fig = plot_hourly_pattern(tdf)
-        figures.extend([ts_fig, hr_fig])
+        # Chat-only: no figures
 
     elif intent == "demographic":
         # If a specific age range is requested, filter and show top locations for that group
@@ -394,13 +523,10 @@ def answer_query(
                     context.setdefault("highlights", []).append(
                         "Top locations: " + ", ".join([f"{name} ({cnt})" for name, cnt in tops])
                     )
-                figures.append(plot_top_locations(jdf))
-                mhtml = make_map_html(jdf)
-                if mhtml:
-                    figures.append(mhtml)
+                # Chat-only: no figures
             else:
                 context["summary"] = "I couldn't find trips matching that age range."
-                figures.append(plot_time_series(filtered))
+                figures.append(plot_time_series(filtered, theme=current_theme))
         else:
             # Otherwise show distribution by age group
             jdf = _join_with_demographics(filtered, riders, demographics)
@@ -413,12 +539,10 @@ def answer_query(
                 context.setdefault("highlights", []).append(
                     f"Top age group: {counts.iloc[0, 0]} ({int(counts.iloc[0, 1])} trips)"
                 )
-                import plotly.express as px
-                fig = px.bar(counts, x="age_group", y="trips", title="Trips by Age Group")
-                figures.append(fig)
+                # Chat-only: no figures
             else:
                 context["summary"] = "I couldn't match riders to demographics for this filter."
-                figures.append(plot_time_series(filtered))
+                figures.append(plot_time_series(filtered, theme=current_theme))
 
     elif intent == "operational":
         size_col = None
@@ -444,19 +568,223 @@ def answer_query(
                         context.setdefault("highlights", []).append(
                             f"Peak hours near {place.name}: " + ", ".join(str(h) for h in peaks)
                         )
-                import plotly.express as px
-                fig = px.histogram(filtered, x=size_col, nbins=12, title="Group Size Distribution")
-                figures.append(fig)
-                figures.append(plot_hourly_pattern(filtered))
+                # Chat-only: no figures
             else:
-                figures.append(plot_time_series(filtered))
+                pass
         else:
             context["summary"] = "I couldn't find a group size column in the data."
-            figures.append(plot_time_series(filtered))
+            pass
+
+    elif intent == "casual_greeting":
+        # Handle friendly greetings - NO DATA ANALYSIS
+        context["summary"] = "What's up! Ready to explore Austin's ride patterns?"
+        
+        import random
+        greeting_responses = [
+            "I've got fresh insights from over 2,000 group rides around Austin!",
+            "Let's dive into some Austin transportation data together!",
+            "I'm here with the latest scoop on how people get around our city!"
+        ]
+        context.setdefault("highlights", []).append(random.choice(greeting_responses))
+        
+        # Skip all data processing for casual greetings - return early
+        context["stats"] = {}  # No stats for greetings
+        return context, figures
+    
+    elif intent == "casual_response":
+        # Handle casual "ok", "cool", etc. - only give interesting info if there's something fresh
+        context["summary"] = "Cool! What would you like to explore about Austin's ride patterns?"
+        
+        import random
+        used_stats = conversation_context.get("mentioned_stats", set()) if conversation_context else set()
+        
+        # Only give ONE fresh insight if available, otherwise just ask what they want
+        if not filtered.empty and len(used_stats) < 3:  # Only if we haven't shared much yet
+            tops = _top_locations(filtered, top_n=3)
+            if tops:
+                top_spot = tops[0][0]
+                clean_name = top_spot.split(',')[0] if ',' in top_spot else top_spot[:40] 
+                insight = f"{clean_name} is popular with {tops[0][1]} recent trips"
+                if insight not in used_stats:
+                    context.setdefault("highlights", []).append(insight)
+                else:
+                    context.setdefault("highlights", []).append("What specific area or time period interests you?")
+            else:
+                context.setdefault("highlights", []).append("What aspect of Austin transportation interests you most?")
+        else:
+            # Ask what they want instead of dumping data
+            context.setdefault("highlights", []).append("What would you like to know about Austin rides?")
+        
+        # Minimal stats for casual responses
+        context["stats"] = {"Available": "Data ready for your questions"}
+        return context, figures
+    
+    elif intent == "confused":
+        # Handle confusion - clarify and offer help - NO DATA ANALYSIS
+        context["summary"] = "Sorry for the confusion! Let me help you explore Austin ride data more clearly."
+        
+        context.setdefault("highlights", []).append(
+            "I can help you discover things like: popular destinations, peak hours, group sizes, costs, or specific neighborhoods. What sounds interesting?"
+        )
+        
+        # No stats for confused responses - just help clarification  
+        context["stats"] = {}
+        return context, figures
+    
+    elif intent == "conversational":
+        # Handle other casual responses - keep it flowing naturally
+        context["summary"] = "Just vibes, checking out the Austin ride scene."
+        
+        # Give varied interesting facts to keep conversation going
+        import random
+        
+        interesting_facts = []
+        if not filtered.empty:
+            tops = _top_locations(filtered, top_n=5)
+            if tops:
+                # Random interesting location fact
+                random_spot = random.choice(tops[:3])
+                interesting_facts.append(f"Mad people hit up {random_spot[0][:30]}... - {random_spot[1]} trips there")
+            
+            if 'trip_distance_km' in filtered.columns:
+                short_routes = _analyze_short_routes(filtered)
+                if short_routes:
+                    interesting_facts.append(f"Popular short hop: {short_routes[0]}")
+                    
+                # Add distance variety fact
+                distances = filtered['trip_distance_km'].dropna()
+                if not distances.empty:
+                    under_2km = len(distances[distances < 2])
+                    over_10km = len(distances[distances > 10])
+                    if under_2km > 0:
+                        interesting_facts.append(f"{under_2km} quick trips under 2km (perfect scooter weather)")
+                    if over_10km > 0:
+                        interesting_facts.append(f"{over_10km} long hauls over 10km")
+        
+        if interesting_facts:
+            context.setdefault("highlights", interesting_facts[:2])
+    
+    elif intent == "more_info":
+        context["summary"] = "Let me dive deeper into the Austin transportation scene."
+        
+        # Provide additional insights they haven't heard yet
+        if not filtered.empty:
+            # Peak times insight
+            if 'hour' in filtered.columns:
+                peak_hours = _peak_hours(filtered, top_k=2)
+                if peak_hours:
+                    context.setdefault("highlights", []).append(
+                        f"Peak riding hours: {peak_hours[0]}:00 and {peak_hours[1]}:00" if len(peak_hours) >= 2 else f"Peak hour: {peak_hours[0]}:00"
+                    )
+            
+            # Weekend vs weekday pattern
+            if 'is_weekend' in filtered.columns:
+                weekend_trips = len(filtered[filtered['is_weekend'] == True])
+                weekday_trips = len(filtered[filtered['is_weekend'] == False]) 
+                if weekend_trips > 0 and weekday_trips > 0:
+                    context.setdefault("highlights", []).append(
+                        f"Weekend trips: {weekend_trips} vs Weekday: {weekday_trips}"
+                    )
+            
+            # Cost insights
+            if 'estimated_cost_usd' in filtered.columns:
+                costs = filtered['estimated_cost_usd'].dropna()
+                if not costs.empty:
+                    cheap_trips = len(costs[costs < 10])
+                    expensive_trips = len(costs[costs > 20])
+                    if cheap_trips > 0:
+                        context.setdefault("highlights", []).append(
+                            f"{cheap_trips} trips under $10 (budget friendly), {expensive_trips} over $20"
+                        )
 
     else:  # general
-        context["summary"] = "Here's an overview based on recent trips."
-        figures.append(plot_time_series(filtered))
+        import random
+        
+        # Vary the summary message
+        summary_options = [
+            "Here's what I found in the Austin ride data.",
+            "Looking at recent trip patterns around town.",
+            "Here's an overview of the ride activity.",
+            "Digging into the Austin transportation scene."
+        ]
+        context["summary"] = random.choice(summary_options)
+        
+        # For general queries, provide diverse insights with better variety
+        if not filtered.empty:
+            # Randomly choose what type of insight to lead with
+            insight_types = []
+            
+            # Top destinations - but vary the format
+            tops = _top_locations(filtered, top_n=4)
+            if tops:
+                if len(tops) >= 3:
+                    # Sometimes show just the top spot, sometimes show multiple
+                    if random.choice([True, False]):
+                        top_spot = tops[0][0]
+                        # Extract a cleaner name
+                        clean_name = top_spot.split(',')[0] if ',' in top_spot else top_spot[:40]
+                        insight_types.append(f"{clean_name} is the hottest spot right now ({tops[0][1]} trips)")
+                    else:
+                        top_three = ", ".join([
+                            (name.split(',')[0] if ',' in name else name[:25]) 
+                            for name, cnt in tops[:3]
+                        ])
+                        insight_types.append(f"Top spots: {top_three}")
+            
+            # Distance/route insights
+            if 'trip_distance_km' in filtered.columns:
+                distances = filtered['trip_distance_km'].dropna()
+                if not distances.empty:
+                    avg_dist = distances.mean()
+                    short_count = len(distances[distances < 2])
+                    long_count = len(distances[distances > 10])
+                    
+                    if short_count > long_count and short_count > 10:
+                        insight_types.append(f"Lots of short hops - {short_count} trips under 2km")
+                    elif avg_dist > 8:
+                        insight_types.append(f"People are traveling far - average distance is {avg_dist:.1f}km")
+                    else:
+                        insight_types.append(f"Mix of distances - average trip is {avg_dist:.1f}km")
+                        
+                    # Add specific short routes sometimes
+                    short_routes = _analyze_short_routes(filtered)
+                    if short_routes and random.choice([True, False]):
+                        insight_types.append(f"Popular quick trip: {short_routes[0]}")
+            
+            # Time-based insights
+            if 'hour' in filtered.columns:
+                peak_hours = _peak_hours(filtered, top_k=2)
+                if peak_hours:
+                    if len(peak_hours) >= 2:
+                        insight_types.append(f"Busiest times: {peak_hours[0]}:00 and {peak_hours[1]}:00")
+                    else:
+                        insight_types.append(f"Peak hour: {peak_hours[0]}:00")
+            
+            # Cost insights if available
+            if 'estimated_cost_usd' in filtered.columns:
+                costs = filtered['estimated_cost_usd'].dropna()
+                if not costs.empty:
+                    avg_cost = costs.mean()
+                    if avg_cost < 12:
+                        insight_types.append(f"Budget friendly rides - averaging ${avg_cost:.2f}")
+                    elif avg_cost > 20:
+                        insight_types.append(f"Higher cost trips - averaging ${avg_cost:.2f}")
+                    else:
+                        insight_types.append(f"Average ride costs ${avg_cost:.2f}")
+            
+            # Group size insights
+            if 'num_riders' in filtered.columns:
+                group_sizes = filtered['num_riders'].dropna()
+                if not group_sizes.empty:
+                    big_groups = len(group_sizes[group_sizes >= 6])
+                    if big_groups > 5:
+                        insight_types.append(f"{big_groups} big group adventures (6+ people)")
+                    
+            # Pick 1-2 random insights to avoid always showing the same pattern
+            if insight_types:
+                selected_insights = random.sample(insight_types, min(2, len(insight_types)))
+                for insight in selected_insights:
+                    context.setdefault("highlights", []).append(insight)
 
     # Numeric summary
     context["stats"].update({

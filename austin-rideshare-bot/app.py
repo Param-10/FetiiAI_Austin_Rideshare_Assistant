@@ -4,6 +4,8 @@ import time
 from typing import Any, Dict
 
 import streamlit as st
+import streamlit.components.v1
+import plotly.graph_objects as go
 from dotenv import load_dotenv
 
 from ai_engine import configure_gemini, generate_response, parse_query
@@ -37,11 +39,37 @@ if "theme" not in st.session_state:
     st.session_state.theme = "dark"  # Default to dark mode
 if "messages" not in st.session_state:
     st.session_state.messages = [
-        {"role": "assistant", "content": "Hi! How can I help you analyze Austin's rideshare data today?"}
+        {"role": "assistant", "content": "Hey there! I'm Riley, your friendly Austin rideshare data analyst. I've got the inside scoop on over 2,000 recent group rides around our city – from late-night Sixth Street runs to airport shuttles and everything in between.\n\nWhat's got you curious about Austin's transportation patterns? Are you wondering about popular hangout spots, rush hour madness, or maybe how different age groups get around town? 🚗✨"}
     ]
 if "query_times" not in st.session_state:
     st.session_state.query_times = []
+if "conversation_context" not in st.session_state:
+    st.session_state.conversation_context = {
+        "topics_discussed": set(),
+        "user_interests": [],
+        "previous_filters": {},
+        "follow_up_suggestions": [],
+        "mentioned_stats": set(),
+        "user_name": "",
+        "name_usage_count": 0,
+        "last_name_used": 0,
+        "recent_response_patterns": [],
+        "recent_questions": [],
+        "last_question_asked": "",
+        "last_question_topic": ""
+    }
 
+
+# --- Helper Functions ---
+def _is_valid_plotly_figure(fig):
+    """Check if the figure is a valid Plotly figure object."""
+    if fig is None:
+        return False
+    # Check if it's a plotly figure
+    return hasattr(fig, 'data') and hasattr(fig, 'layout') and (
+        isinstance(fig, go.Figure) or 
+        (hasattr(fig, '__dict__') and 'data' in fig.__dict__ and 'layout' in fig.__dict__)
+    )
 
 # --- Dynamic Theming ---
 def apply_theme():
@@ -109,8 +137,8 @@ trips, riders, demographics, meta = (
 )
 
 # --- App Header ---
-st.title("🤖 FetiiAI Rideshare Assistant")
-st.caption("Ask me about group transportation trends in Austin, TX")
+st.title("🚗 Riley - Your Austin Rideshare Buddy")
+st.caption("ChatGPT meets Austin transportation data – let's explore the city together!")
 
 
 # --- Controls and Filters Expander ---
@@ -123,13 +151,39 @@ with st.expander("⚙️ Controls & Filters"):
 
     st.markdown("---")
     st.markdown("Use the controls below to filter the dataset for your queries.")
+    
+    if st.button("🗑️ Start Fresh Chat", help="Clear conversation history and context"):
+        st.session_state.messages = [
+            {"role": "assistant", "content": "Hey there! I'm Riley, your friendly Austin rideshare data analyst. I've got the inside scoop on over 2,000 recent group rides around our city – from late-night Sixth Street runs to airport shuttles and everything in between.\n\nWhat's got you curious about Austin's transportation patterns? Are you wondering about popular hangout spots, rush hour madness, or maybe how different age groups get around town? 🚗✨"}
+        ]
+        st.session_state.conversation_context = {
+            "topics_discussed": set(),
+            "user_interests": [],
+            "previous_filters": {},
+            "follow_up_suggestions": [],
+            "mentioned_stats": set(),
+            "user_name": "",
+            "name_usage_count": 0,
+            "last_name_used": 0,
+            "recent_response_patterns": [],
+            "recent_questions": [],
+            "last_question_asked": "",
+            "last_question_topic": ""
+        }
+        st.rerun()
 
-    if st.button("Try a sample question"):
+    if st.button("Give me something interesting to ask about"):
         sample_queries = [
-            "How many groups went to Moody Center last month?",
-            "What are the top drop-off spots for 18–24 year-olds on Saturday nights?",
-            "When do large groups (6+ riders) typically ride downtown?",
-            "What are the peak pickup hours on weekends?",
+            "What's the busiest time for rides around UT?",
+            "Where do college students go on Friday nights?", 
+            "Show me weekend hotspots for big groups",
+            "What's the typical ride cost these days?",
+            "Where are people going from the airport?",
+            "Which neighborhoods are most popular for groups?",
+            "When do people ride to Sixth Street?",
+            "What time do folks head home from downtown?",
+            "Tell me about late-night ride patterns",
+            "Where do 20-somethings hang out?"
         ]
         st.session_state.pending_query = random.choice(sample_queries)
         st.rerun()
@@ -155,14 +209,11 @@ with st.expander("⚙️ Controls & Filters"):
         st.caption(f"Time range: {meta['time_range']['min']:%Y-%m-%d} → {meta['time_range']['max']:%Y-%m-%d}")
 
 
-# --- Chat Interface ---
-# Replay history and display charts
-for msg in st.session_state.messages:
+# --- Chat Interface (chat-only) ---
+# Replay history (text only)
+for mi, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        if "figures" in msg:
-            for fig in msg["figures"]:
-                st.plotly_chart(fig, use_container_width=True)
 
 # Process new user input
 if prompt := st.chat_input("Ask a question...") or st.session_state.pop("pending_query", None):
@@ -174,15 +225,85 @@ if prompt := st.chat_input("Ask a question...") or st.session_state.pop("pending
     with st.chat_message("assistant"):
         with st.spinner("Analyzing data..."):
             intent, entities = parse_query(prompt)
-            context, figures = answer_query(trips, riders, demographics, intent, entities)
-            response_text = generate_response(query=prompt, intent=intent, entities=entities, context=context)
+            context, figures = answer_query(trips, riders, demographics, intent, entities, st.session_state.conversation_context)
+            
+            # Update conversation context
+            st.session_state.conversation_context["topics_discussed"].add(intent)
+            if entities.get("place"):
+                st.session_state.conversation_context["user_interests"].append(f"location:{entities['place']}")
+            if entities.get("age_min") or entities.get("age_max"):
+                st.session_state.conversation_context["user_interests"].append("demographics")
+            
+            # Track mentioned statistics to avoid repetition
+            if "mentioned_stats" not in st.session_state.conversation_context:
+                st.session_state.conversation_context["mentioned_stats"] = set()
+                
+            # Track name usage to avoid overuse
+            if "name_usage_count" not in st.session_state.conversation_context:
+                st.session_state.conversation_context["name_usage_count"] = 0
+            if "last_name_used" not in st.session_state.conversation_context:
+                st.session_state.conversation_context["last_name_used"] = 0
+            
+            # Extract user name from conversation if mentioned
+            user_name = st.session_state.conversation_context.get("user_name", "")
+            if not user_name:
+                # Look for name in recent user messages
+                for msg in st.session_state.messages[-3:]:
+                    if msg["role"] == "user":
+                        content = msg["content"].lower()
+                        if "my name is" in content or "i'm" in content or "i am" in content:
+                            words = content.split()
+                            for i, word in enumerate(words):
+                                if word in ["is", "i'm", "am"] and i + 1 < len(words):
+                                    potential_name = words[i + 1].strip(".,!?").title()
+                                    if potential_name.isalpha() and len(potential_name) > 1:
+                                        st.session_state.conversation_context["user_name"] = potential_name
+                                        break
+                
+            # Add key stats from this response to avoid future repetition
+            for key, value in context.get("stats", {}).items():
+                if any(word in key.lower() for word in ["distance", "cost", "trips"]):
+                    st.session_state.conversation_context["mentioned_stats"].add(f"{key}:{value}")
+            
+            # Generate conversational response
+            try:
+                response_text = generate_response(
+                    query=prompt, 
+                    intent=intent, 
+                    entities=entities, 
+                    context=context,
+                    conversation_history=st.session_state.messages,
+                    conversation_context=st.session_state.conversation_context
+                )
+            except Exception as e:
+                st.error(f"AI Error: {str(e)}")
+                st.error("Please ensure GEMINI_API_KEY is properly configured in your environment variables.")
+                st.stop()
             
             st.markdown(response_text)
-            # Display new figures and save to session state
-            assistant_message = {"role": "assistant", "content": response_text, "figures": []}
-            for fig in figures:
-                if fig:
-                    st.plotly_chart(fig, use_container_width=True)
-                    assistant_message["figures"].append(fig)
+            
+            # Track what question was asked in the response to remember for next time
+            response_lower = response_text.lower()
+            if any(phrase in response_lower for phrase in ["group size", "how many people", "party size", "riders"]):
+                st.session_state.conversation_context["last_question_topic"] = "group_sizes"
+                st.session_state.conversation_context["last_question_asked"] = "about group sizes"
+            elif any(phrase in response_lower for phrase in ["what time", "when", "peak hour", "timing"]):
+                st.session_state.conversation_context["last_question_topic"] = "timing"
+                st.session_state.conversation_context["last_question_asked"] = "about timing"
+            elif any(phrase in response_lower for phrase in ["where", "location", "destination", "spots"]):
+                st.session_state.conversation_context["last_question_topic"] = "locations"
+                st.session_state.conversation_context["last_question_asked"] = "about locations"
+            elif any(phrase in response_lower for phrase in ["age", "demographic", "old", "year"]):
+                st.session_state.conversation_context["last_question_topic"] = "demographics"
+                st.session_state.conversation_context["last_question_asked"] = "about demographics"
+            
+            # Track if name was used in this response
+            user_name = st.session_state.conversation_context.get("user_name", "")
+            if user_name and user_name.lower() in response_text.lower():
+                st.session_state.conversation_context["name_usage_count"] += 1
+                st.session_state.conversation_context["last_name_used"] = len(st.session_state.messages)
+            
+            # Save assistant message (text only)
+            assistant_message = {"role": "assistant", "content": response_text}
             st.session_state.messages.append(assistant_message)
     st.rerun()

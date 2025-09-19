@@ -1,36 +1,41 @@
-### FetiiAI Rideshare Assistant Write-up
+## FetiiAI Austin Rideshare Assistant
 
-#### **1. What We Built**
+### What We Built
 
-We built an interactive, conversational AI assistant that provides insights into Fetii's rideshare data for the Austin, TX market. The assistant, powered by Google's Gemini Pro, can answer natural language questions about transportation patterns, popular locations, and rider demographics.
+We built Riley, a conversational AI assistant that knows everything about Fetii's rideshare data in Austin, Texas. Think ChatGPT but for Austin transportation patterns. Riley can answer questions about where people go, when they travel, and what the data reveals about Austin's group transportation scene.
 
-Key features include:
-*   **Conversational AI:** Users can ask questions in plain English to get insights.
-*   **Dynamic Visualizations:** The assistant generates dynamic charts and maps (e.g., "Trips Over Time", "Hourly Pickup Patterns", "Top Drop-off Locations") to visually represent the data.
-*   **Modern, Minimalist UI:** A completely redesigned user interface with a "spectacular" dark-by-default theme and a light mode toggle for user preference. The layout is clean, centered, and fully responsive.
-*   **Interactive Filters:** Users can filter the entire dataset by date range and group size to refine their queries.
+The assistant processes over 2,000 recent rideshare trips and provides insights through natural conversation. Instead of charts and graphs, Riley talks you through the data with specific examples, interesting facts, and follow up questions that keep the conversation flowing.
 
-We successfully addressed the initial bugs, including fixing a critical issue that prevented the "Trips Over Time" chart from loading and resolving layout problems that caused charts to be clipped.
+Key features include Riley's personality system that remembers what you talked about, adapts to your communication style, and avoids repeating information. Riley can handle anything from casual responses like "sheesh" to specific questions about weekend pickup patterns or popular destinations.
 
-#### **2. How It Works**
+### How It Works
 
-The application is built on a Python backend using several key technologies:
+The system runs on Python with several key components working together.
 
-*   **Streamlit:** Powers the interactive web application and user interface.
-*   **Pandas:** Used for all data loading, cleaning, and manipulation. The system robustly handles data from Excel or CSV files and performs significant feature engineering (e.g., calculating trip distances, costs, and time-based features).
-*   **Plotly:** Creates the dynamic, interactive charts for data visualization.
-*   **Gemini & LangChain:** The AI component uses a hybrid system for understanding user queries:
-    1.  A fast, local, keyword-based classifier handles simple, common queries for speed and reliability.
-    2.  For more complex or general questions, it leverages the Google Gemini 1.5 Flash model to parse intent and extract specific entities (like locations, dates, and ages).
-*   **Analytics Engine:** A custom analytics module processes the parsed query, filters the Pandas DataFrame accordingly, and generates the necessary data summaries and visualizations.
+**Streamlit** powers the web interface and chat experience. Users type questions and get conversational responses in real time.
 
-The new UI is implemented using custom CSS injected into Streamlit, allowing for fine-grained control over the visual appearance and enabling the seamless dark/light mode theme switching.
+**Pandas** handles all the data processing. The system loads rideshare trip data and calculates distances, costs, peak hours, popular routes, and demographic breakdowns. It can work with Excel files or CSV backups automatically.
 
-#### **3. What I'd Improve or Add Next**
+**Google Gemini 2.0 Flash** provides the natural language understanding and response generation. We built a smart intent classification system that recognizes different types of questions, from location queries to casual conversation.
 
-While the core functionality is strong, there are several areas for future improvement:
+**Custom Analytics Engine** processes user questions by filtering the data based on what they're asking about. It finds relevant patterns, calculates statistics, and identifies interesting insights like popular short routes perfect for scooters.
 
-*   **Improve Intent Detection:** During testing, we found that some nuanced queries were occasionally misclassified by the AI model. The current hybrid system is a good start, but fine-tuning the Gemini model with more examples or using a more advanced RAG (Retrieval-Augmented Generation) approach would improve the accuracy and robustness of the natural language understanding.
-*   **More Advanced Analytics:** We could add more complex analytics, such as route optimization suggestions, demand forecasting based on historical trends, or A/B testing analysis for different service changes.
-*   **User Accounts & History:** Allowing users to log in to save their query history and personalized filter settings would be a great addition.
-*   **Performance Optimization:** For larger datasets, the Pandas operations could be optimized further using more efficient data storage formats like Parquet and more advanced query execution engines.
+**Memory System** tracks conversation history so Riley remembers what you've discussed and won't repeat the same statistics. It also learns your interests and suggests related topics.
+
+The AI uses advanced prompt engineering to maintain Riley's personality while providing accurate, specific insights from the actual data. Riley can match your energy level whether you're being casual or asking detailed questions.
+
+### What I'd Improve or Add Next
+
+Several areas could make Riley even better.
+
+**Enhanced Data Sources** would let Riley answer more specific questions. Adding real time data, weather information, or event schedules could provide richer insights about why certain patterns happen.
+
+**Deeper Personality** could include more Austin local knowledge. Riley could reference specific neighborhoods, events like SXSW or ACL, or local culture to make conversations feel more authentic.
+
+**Advanced Analytics** could include route optimization suggestions, demand prediction, or personalized recommendations based on your travel patterns and preferences.
+
+**Multi Session Memory** would let Riley remember you across different visits to the website. This could include your preferences, past questions, and ongoing interests.
+
+**Voice Interface** could make the experience more natural. Speaking with Riley instead of typing could feel more like having a conversation with a knowledgeable local friend.
+
+**Integration Features** could connect Riley to mapping services, calendar apps, or transportation booking systems to move from insights to action.
